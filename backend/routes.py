@@ -7,6 +7,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
 from jose import jwt, JWTError
+import razorpay
 from database import get_db, User, Client, Invoice, AgentLog, MarketPrice, Alert, WhatsAppMessage
 
 router = APIRouter()
@@ -15,8 +16,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 SECRET_KEY = "fabriciq-secret-2025"
 ALGORITHM = "HS256"
 
+# ── RAZORPAY ──
+RAZORPAY_KEY = "rzp_test_SlamRRAxwSBfdu"      # ← apni Key ID daalo
+RAZORPAY_SECRET = "YPXlMOjJwbhL0yzDCEeOKRMV"   # ← apna Secret daalo
+rzp = razorpay.Client(auth=(RAZORPAY_KEY, RAZORPAY_SECRET))
+
 def hash_password(p): return pwd_context.hash(p[:72])
-def verify_password(p, h): return pwd_context.verify(p, h)
+def verify_password(p, h): return pwd_context.verify(p[:72], h)
 def create_token(data):
     d = data.copy()
     d["exp"] = datetime.utcnow() + timedelta(days=7)
@@ -163,22 +169,43 @@ def mark_paid(invoice_id: int, current_user: User = Depends(get_current_user), d
     if inv: inv.status = "paid"; inv.paid_date = datetime.utcnow(); db.commit()
     return {"message": "Paid mark ho gaya!"}
 
-# AGENTS MANUAL RUN
+# RAZORPAY
+@router.post("/api/payment/create-order")
+def create_order(invoice_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    inv = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    if not inv: raise HTTPException(status_code=404, detail="Invoice nahi mila")
+    order = rzp.order.create({
+        "amount": int(inv.total_amount * 100),
+        "currency": "INR",
+        "receipt": inv.invoice_number
+    })
+    return {"order_id": order["id"], "amount": inv.total_amount, "key": RAZORPAY_KEY}
+
+@router.post("/api/payment/verify")
+def verify_payment(data: dict, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        rzp.utility.verify_payment_signature(data)
+        inv = db.query(Invoice).filter(Invoice.invoice_number == data.get("receipt")).first()
+        if inv: inv.status = "paid"; inv.paid_date = datetime.utcnow(); db.commit()
+        return {"status": "Payment successful!"}
+    except:
+        raise HTTPException(status_code=400, detail="Payment verify nahi hua")
+
+# AGENTS
 @router.post("/api/agents/run/{agent_name}")
 def run_agent(agent_name: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     import random
-    commodities = [
-        {"commodity": "Cotton", "city": "Surat", "price": random.uniform(67000, 70000), "unit": "per candy"},
-        {"commodity": "Cotton", "city": "Mumbai", "price": random.uniform(67500, 70500), "unit": "per candy"},
-        {"commodity": "Yarn", "city": "Surat", "price": random.uniform(240, 250), "unit": "per kg"},
-        {"commodity": "Polyester", "city": "Surat", "price": random.uniform(95, 102), "unit": "per kg"},
-    ]
     if agent_name == "market":
-        for item in commodities:
-            mp = MarketPrice(**item, change_percent=random.uniform(-3, 3))
+        for item in [
+            {"commodity": "Cotton", "city": "Surat", "price": random.uniform(67000,70000), "unit": "per candy"},
+            {"commodity": "Cotton", "city": "Mumbai", "price": random.uniform(67500,70500), "unit": "per candy"},
+            {"commodity": "Yarn", "city": "Surat", "price": random.uniform(240,250), "unit": "per kg"},
+            {"commodity": "Polyester", "city": "Surat", "price": random.uniform(95,102), "unit": "per kg"},
+        ]:
+            mp = MarketPrice(**item, change_percent=random.uniform(-3,3))
             db.add(mp)
         db.commit()
-    log = AgentLog(agent_name=f"{agent_name.title()} Agent", action="manual_run", status="success", message=f"CEO ne manually run kiya")
+    log = AgentLog(agent_name=f"{agent_name.title()} Agent", action="manual_run", status="success", message="CEO ne manually run kiya")
     db.add(log); db.commit()
     return {"message": f"{agent_name} agent run ho gaya!"}
 
