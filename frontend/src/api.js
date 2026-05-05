@@ -1,4 +1,4 @@
-const BASE = "http://localhost:8000";
+const BASE = "https://fabriciq-backend-0c2z.onrender.com";
 
 function getToken() {
   return localStorage.getItem("fabriciq_token");
